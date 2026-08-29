@@ -1,6 +1,19 @@
+# byte-compiled
 *.pyc
 __pycache__/
+
+# data / artefacts
 *.npz
 *.pkl
+*.png
+data/
+
+# environments & editors
 venv/
 .DS_Store
+
+# legacy scripts, superseded by the spectral_lsh package
+lshash.py
+experimentation.py
+knn.py
+main.py
