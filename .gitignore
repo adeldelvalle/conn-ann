@@ -2,9 +2,18 @@
 *.pyc
 __pycache__/
 
-# data / artefacts
+# build artefacts
+build/
+dist/
+*.egg-info/
+*.so
+spectral_lsh_fast/_vote.c
+
+# data / figures
+*.npy
 *.npz
 *.pkl
+*.zip
 *.png
 data/
 

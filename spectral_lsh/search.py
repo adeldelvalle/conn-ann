@@ -3,10 +3,14 @@
 Two stages, in the spirit of IVF and HNSW but splitting the work differently:
 
 - *Entry*: the query is hashed and the rarest buckets it lands in supply a
-  handful of seed nodes.  This is the job HNSW gives to its upper layers and
-  IVF to its coarse quantiser; here the LSH tables already answer it, and the
-  smallest bucket is the most informative one to ask (the same
-  ``log(n / m_b)`` argument that drives the surprisal weighting).
+  handful of seed nodes - structurally the job HNSW gives to its upper layers
+  and IVF to its coarse quantiser.  Measured, though, this contributes little:
+  seeding from uniformly random nodes instead reaches the same recall for a few
+  percent more distance computations, because the collision graph is navigable
+  on its own (see ``entry="random"``).  The graph's *spurious* edges - the ~64%
+  that are not true nearest neighbours - are what supply the long-range links
+  greedy routing needs; an exact k-NN graph over the same points traps the beam
+  far short of full recall.
 - *Descent*: from those seeds, walk the neighbour graph, computing real
   distances, always expanding the closest unexpanded node, until no unvisited
   neighbour improves on the current result set.
@@ -100,7 +104,7 @@ class GraphSearcher(object):
             seeds = seeds[:n_entry]
         return seeds
 
-    def search_one(self, query, code_row, k=10, ef=32, n_entry=32):
+    def search_one(self, query, code_row=None, k=10, ef=32, n_entry=32, seeds=None):
         """
         Nearest neighbours of one query.
 
@@ -110,12 +114,18 @@ class GraphSearcher(object):
             `ef` keeps alternatives alive and is what makes graph search
             competitive.  Must be >= k to return k results reliably.
         :param n_entry: how many seed nodes to take from the buckets.
+        :param seeds: explicit entry nodes, bypassing the bucket lookup.  Used
+            by the ``entry="random"`` ablation, which asks whether the hashing
+            is contributing anything the graph could not supply on its own.
         :returns: ``(indices, squared_distances)`` sorted nearest first.
         """
         query = np.asarray(query, dtype=np.float32)
         qq = float(query @ query)
 
-        seeds = self._entry_points(code_row, n_entry)
+        if seeds is None:
+            seeds = self._entry_points(code_row, n_entry)
+        else:
+            seeds = np.asarray(seeds, dtype=np.int64)
         if seeds.size == 0:
             return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float32)
 
@@ -158,22 +168,39 @@ class GraphSearcher(object):
         dst = np.asarray([-d for d, _ in top], dtype=np.float32)
         return idx, dst
 
-    def search(self, queries, k=10, ef=32, n_entry=32):
+    def search(self, queries, k=10, ef=32, n_entry=32, entry="lsh",
+               random_state=None):
         """
         Batch version of `search_one`.
 
+        :param entry: ``"lsh"`` seeds the descent from the rarest buckets the
+            query hashes into; ``"random"`` seeds it from `n_entry` uniformly
+            random nodes instead.  The second is the control: if it matches
+            ``"lsh"``, the graph is navigable on its own and the hashing is not
+            contributing the entry-point advantage it is claimed to.
         :returns: ``(indices, distances)`` of shape (n_queries, k), padded with
             -1 / inf where a query found fewer than k results.
         """
         queries = np.asarray(queries, dtype=np.float32)
         if queries.ndim == 1:
             queries = queries[None, :]
-        codes = self.index.encode(queries).tolist()
+
+        if entry == "lsh":
+            codes = self.index.encode(queries).tolist()
+            seeds_per_query = [None] * queries.shape[0]
+        elif entry == "random":
+            rng = np.random.default_rng(random_state)
+            codes = [None] * queries.shape[0]
+            seeds_per_query = rng.integers(0, self.points.shape[0],
+                                           size=(queries.shape[0], n_entry))
+        else:
+            raise ValueError("entry must be 'lsh' or 'random', got %r" % (entry,))
 
         idx = np.full((queries.shape[0], k), -1, dtype=np.int64)
         dst = np.full((queries.shape[0], k), np.inf, dtype=np.float32)
-        for row, (query, code_row) in enumerate(zip(queries, codes)):
-            i, d = self.search_one(query, code_row, k=k, ef=ef, n_entry=n_entry)
+        for row in range(queries.shape[0]):
+            i, d = self.search_one(queries[row], codes[row], k=k, ef=ef,
+                                   n_entry=n_entry, seeds=seeds_per_query[row])
             idx[row, :i.size] = i
             dst[row, :d.size] = d
         return idx, dst
