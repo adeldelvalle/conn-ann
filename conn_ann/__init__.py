@@ -1,15 +1,18 @@
-"""Spectral-LSH: locality-sensitive hashing and consensus neighbour graphs.
+"""CoNN - Co-occurrence Nearest Neighbours.
+
+Neighbours are decided by how often two points land in the same hash bucket
+across many independent tables, not by measuring the distance between them.
 
 Layers, bottom up:
 
-- `spectral_lsh.hashing`   - `RandomProjectionHasher`: points -> bucket codes.
-- `spectral_lsh.index`     - `LSHIndex`: codes -> hash tables, plus the
+- `conn_ann.hashing`   - `RandomProjectionHasher`: points -> bucket codes.
+- `conn_ann.index`     - `LSHIndex`: codes -> hash tables, plus the
                              collision statistics that decide whether a build
                              is linear or quadratic in N.
-- `spectral_lsh.weighting` - what one shared bucket is worth, and how two
+- `conn_ann.weighting` - what one shared bucket is worth, and how two
                              directed scores become one undirected weight.
-- `spectral_lsh.graph`     - `NeighborGraphBuilder`: tables -> weighted edges.
-- `spectral_lsh.lshash`    - `LSHash`, the flat backwards-compatible facade.
+- `conn_ann.graph`     - `NeighborGraphBuilder`: tables -> weighted edges.
+- `conn_ann.lshash`    - `LSHash`, the flat backwards-compatible facade.
 
 Typical use::
 
@@ -26,7 +29,7 @@ from .weighting import (MIN_SURPRISAL, WEIGHTINGS, InverseLogWeighting,
                         LegacyWeighting, SurprisalWeighting, UniformWeighting,
                         VoteWeighting, get_weighting, register)
 
-__version__ = "0.3.0"
+__version__ = "0.1.0"
 
 __all__ = [
     "LSHash", "LSHIndex", "RandomProjectionHasher", "GraphSearcher",

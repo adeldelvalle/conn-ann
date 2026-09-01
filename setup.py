@@ -12,10 +12,10 @@ try:
 except ImportError:  # building from a released sdist that ships the generated C
     cythonize = None
 
-SOURCE = "spectral_lsh_fast/_vote.pyx" if cythonize else "spectral_lsh_fast/_vote.c"
+SOURCE = "conn_ann/fast/_vote.pyx" if cythonize else "conn_ann/fast/_vote.c"
 
 ext = [Extension(
-    "spectral_lsh_fast._vote",
+    "conn_ann.fast._vote",
     [SOURCE],
     include_dirs=[np.get_include()],
     extra_compile_args=["-O3", "-funroll-loops"],

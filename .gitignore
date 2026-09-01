@@ -7,7 +7,7 @@ build/
 dist/
 *.egg-info/
 *.so
-spectral_lsh_fast/_vote.c
+conn_ann/fast/_vote.c
 
 # data / figures
 *.npy
@@ -21,8 +21,10 @@ data/
 venv/
 .DS_Store
 
-# legacy scripts, superseded by the spectral_lsh package
-lshash.py
-experimentation.py
-knn.py
-main.py
+# legacy top-level scripts, superseded by the package.  Anchored with a leading
+# slash: a bare "lshash.py" also matches conn_ann/lshash.py, which the package
+# imports, and silently keeps it out of the repo.
+/lshash.py
+/experimentation.py
+/knn.py
+/main.py

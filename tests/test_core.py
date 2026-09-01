@@ -9,8 +9,8 @@ from itertools import combinations
 import numpy as np
 import pytest
 
-from spectral_lsh import LSHIndex, NeighborGraphBuilder, WEIGHTINGS, get_weighting
-from spectral_lsh_fast import FastLSH, submask_table
+from conn_ann import LSHIndex, NeighborGraphBuilder, WEIGHTINGS, get_weighting
+from conn_ann.fast import FastLSH, submask_table
 
 
 @pytest.fixture(scope="module")

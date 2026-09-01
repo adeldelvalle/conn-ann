@@ -19,7 +19,18 @@ import numpy as np
 
 from ._vote import vote, vote_direct
 
-__all__ = ["FastLSH", "submask_table"]
+__all__ = ["FastLSH", "submask_table", "principal_axes"]
+
+
+def principal_axes(Xc, n_components, sample=6000):
+    """Top `n_components` principal directions of already-centred data.
+
+    Split out so a sweep can compute it once and pass it to many `fit` calls -
+    the eigendecomposition is O(d^3) and dominates fitting at large d.
+    """
+    cov = np.cov(np.asarray(Xc[:min(sample, len(Xc))], dtype=np.float64).T)
+    w, V = np.linalg.eigh(cov)
+    return np.ascontiguousarray(V[:, np.argsort(-w)[:n_components]], dtype=np.float32)
 
 
 def submask_table(p, r):
@@ -94,18 +105,26 @@ class FastLSH(object):
         """Buckets consulted per table, including the exact one."""
         return int(self._submasks.shape[0])
 
-    def fit(self, X):
-        """Center, project, hash, and sort each table's codes for binary search."""
+    def fit(self, X, projection=None):
+        """Center, project, hash, and group each table's codes.
+
+        :param projection: a precomputed (d, pca_dim) column-orthonormal matrix,
+            reused instead of running the eigendecomposition.  Fitting many
+            configurations over the same data otherwise repeats an O(d^3)
+            decomposition per fit, which dominates everything else at large d.
+            `principal_axes` computes one you can share.
+        """
         X = np.ascontiguousarray(X, dtype=np.float32)
         self.n_, d = X.shape
         self.mean_ = X.mean(0)
         Xc = X - self.mean_
 
-        if self.pca_dim:
-            cov = np.cov(Xc[:min(6000, self.n_)].T)
-            w, V = np.linalg.eigh(cov)
-            self.projection_ = np.ascontiguousarray(V[:, np.argsort(-w)[:self.pca_dim]],
-                                                    dtype=np.float32)
+        if projection is not None:
+            self.projection_ = np.ascontiguousarray(projection, dtype=np.float32)
+            self.pca_dim = self.projection_.shape[1]
+            H = Xc @ self.projection_
+        elif self.pca_dim:
+            self.projection_ = principal_axes(Xc, self.pca_dim)
             H = Xc @ self.projection_
         else:
             self.projection_ = None

@@ -1,25 +1,26 @@
-# CoNN - Co-ocurrence Nearest Neighbours
+# CoNN — Co-occurrence Nearest Neighbours
 
-Locality-sensitive hashing that treats bucket collisions as **votes**: two points that
+Neighbour search and graph construction from **co-occurrence**: locality-sensitive
+hashing that treats bucket collisions as **votes**: two points that
 keep landing in the same bucket across many independent hash tables are probably
 neighbours, and how *surprising* each collision was says how much to believe it.
 
 Two things are built on that idea:
 
-- **`spectral_lsh`** — a weighted neighbour graph for community detection
+- **`conn_ann`** — a weighted neighbour graph for community detection
   (Louvain / Leiden). Construction computes no distances at all.
-- **`spectral_lsh_fast`** — a compiled multi-probe retrieval path: vote, shortlist,
+- **`conn_ann.fast`** — a compiled multi-probe retrieval path: vote, shortlist,
   then rank the shortlist by true distance.
 
 ```python
-from spectral_lsh import LSHIndex, NeighborGraphBuilder
+from conn_ann import LSHIndex, NeighborGraphBuilder
 
 index = LSHIndex("auto", input_dim=784, num_tables=40, bucket_size=64).build(X)
 edges = NeighborGraphBuilder(index).build(k=60)      # [(i, j, weight), ...]
 ```
 
 ```python
-from spectral_lsh_fast import FastLSH
+from conn_ann.fast import FastLSH
 
 index = FastLSH(num_tables=160, pca_dim=32).fit(X)
 neighbours, distances = index.search(queries, k=10, n_candidates=512)
@@ -30,8 +31,8 @@ neighbours, distances = index.search(queries, k=10, n_candidates=512)
 ## Install
 
 ```bash
-git clone <your-remote> spectral-lsh
-cd spectral-lsh
+git clone <your-remote> conn_ann
+cd conn_ann
 pip install -e .                     # builds the Cython extension
 pip install -e ".[clustering,bench,dev]"   # igraph/leidenalg, faiss, pytest
 ```
@@ -48,33 +49,39 @@ python -m pytest tests/
 
 ## Should you use this?
 
-Be honest with yourself about the answer. Measured against `faiss` HNSW, both
-single-threaded, k=10, on five datasets:
+Measured against `faiss` HNSW, single-threaded, k=10, **with both sides swept** over
+their hyperparameters and compared at matched recall:
 
-| dataset | d | intrinsic dim | ours | HNSW | verdict |
+| dataset | d | N | ours | HNSW | |
 |---|---|---|---|---|---|
-| **LFW faces** | 2914 | 20.2 | 0.988 @ 0.34 ms | 0.986 @ 0.26 ms | **competitive** |
-| CIFAR-10 | 3072 | 19.5 | 0.933 @ 0.33 ms | 0.935 @ 0.24 ms | close |
-| Fashion-MNIST | 784 | 10.7 | 0.995 @ 0.34 ms | 1.000 @ 0.07 ms | 5× behind |
-| GloVe-6B-100d | 100 | 22.1 | 0.993 @ 1.05 ms | 0.991 @ 0.23 ms | 4.5× behind |
-| covtype | 54 | 2.8 | 1.000 @ 0.23 ms | 1.000 @ 0.01 ms | 40× behind |
+| **LFW faces** | 2914 | 12.8k | 0.995 @ **0.580 ms** | 0.995 @ 0.803 ms | **1.4× faster** |
+| GloVe-6B-100d | 100 | 100k | 0.990 @ 0.665 ms | 0.992 @ 0.232 ms | 2.9× slower |
+| Fashion-MNIST | 784 | 20k | 0.991 @ 0.222 ms | 0.991 @ 0.049 ms | 4.5× slower |
+| covtype | 54 | 20k | 0.998 @ 0.078 ms | 0.986 @ 0.009 ms | 8.3× slower |
 
-**Use it when a single distance evaluation is expensive** — vectors in the
-thousands of dimensions, costly metrics, or distances fetched over a network.
-The voting stage has a fixed cost (`L × probes × bucket size` memory touches)
-that it pays before computing a single distance, and that only pays for itself
-when the distances it avoids are dear. On 100-d embeddings it never is.
+**The distinguishing property is the shape of the cost curve, not raw speed.** On LFW,
+going from 90% to 99% recall costs us 0.387 → 0.580 ms; HNSW over the same range goes
+0.314 → 0.803 ms. It is faster where recall is cheap and we are faster where it is
+expensive, because voting has a large **fixed** entry cost you pay before touching a
+single vector — and once paid, more recall is just a longer shortlist.
 
-Two things it wins at regardless:
+That also explains the losses. When HNSW finishes a query in 9 µs (covtype), our fixed
+cost is eight times its entire budget. The gap tracks **how much work the problem
+actually requires**, not the dimension: GloVe at d=100 is closer than Fashion-MNIST at
+d=784, because GloVe (N=100k, contrast 1.59) is a genuinely harder search.
 
-- **Build time.** 2 s versus 46 s for HNSW on GloVe-100k — 23× faster, consistently.
-- **Clustering.** The graph is the point; retrieval latency is irrelevant there.
+So: **worth trying when you need high recall on a hard problem**, or when a single
+distance is expensive. Reach for HNSW for low-recall, low-latency lookups on easy data.
 
-For general-purpose in-memory ANN on 100–1536-d embeddings, use HNSW.
+**Tune before you judge it.** Every configuration above was found by sweeping; reusing
+one dataset's settings on another cost up to 5× (covtype went from 40× behind to 8.3×
+on tuning alone). `hash_size`, `num_tables`, `probe_bits`/`probe_radius`, `pca_dim` and
+`n_candidates` all matter, and the best settings are not portable between datasets.
 
----
+One axis is consistently ours regardless: **build time is ~23× faster** — 2 s versus
+46 s on GloVe-100k — which matters if your index is rebuilt often.
 
-## The graph: `spectral_lsh`
+## The graph: `conn_ann`
 
 Every point throws a *star* — it looks up its bucket in each of `L` tables, tallies a
 weighted vote for everything it collides with, and keeps its top `k`. The stars are
@@ -138,10 +145,10 @@ your data rather than assuming uniform occupancy.
 
 ---
 
-## Retrieval: `spectral_lsh_fast`
+## Retrieval: `conn_ann.fast`
 
 ```python
-from spectral_lsh_fast import FastLSH
+from conn_ann.fast import FastLSH
 
 index = FastLSH(
     hash_size=10,        # bits per table
@@ -197,14 +204,14 @@ Sweep it.
 ## Layout
 
 ```
-spectral_lsh/          pure Python
+conn_ann/          pure Python
   hashing.py           RandomProjectionHasher — points -> bucket codes
   index.py             LSHIndex — codes -> tables, collision statistics
   weighting.py         VoteWeighting + four schemes, registry
   graph.py             NeighborGraphBuilder, EdgeStats
   search.py            GraphSearcher — beam search over the built graph
   lshash.py            LSHash, a flat backwards-compatible facade
-spectral_lsh_fast/     compiled
+conn_ann.fast/     compiled
   _vote.pyx            voting kernel: codes, probes, bucket lookup, top-C
   __init__.py          FastLSH
 tests/test_core.py     17 tests, including numpy-vs-C equivalence

@@ -1,0 +1,6 @@
+include LICENSE
+include README.md
+include pyproject.toml
+include conn_ann/fast/*.pyx
+recursive-include tests *.py
+global-exclude *.py[cod] __pycache__/* *.so
