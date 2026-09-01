@@ -1,0 +1,59 @@
+name: publish
+
+# Tag-driven: `git tag v0.1.0 && git push --tags` builds every wheel and
+# uploads. A version can never be re-uploaded to PyPI, so the release job is
+# gated behind a GitHub Environment you can require manual approval on.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  wheels:
+    name: wheels · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-13, macos-14, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v2.21.3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: ./wheelhouse/*.whl
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pipx run build --sdist
+      # the sdist must build on a machine without Cython, using the shipped _vote.c
+      - name: Verify the sdist installs standalone
+        run: |
+          python -m venv /tmp/check
+          /tmp/check/bin/pip install dist/*.tar.gz
+          /tmp/check/bin/pip install pytest
+          /tmp/check/bin/python -m pytest tests/ -q
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  release:
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    environment: pypi          # add a required reviewer here for a manual gate
+    permissions:
+      id-token: write          # Trusted Publishing: no API token is stored
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
