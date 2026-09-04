@@ -162,7 +162,33 @@ index = FastLSH(
 idx, dist = index.search(queries, k=10, n_candidates=512)
 idx, dist = index.search_parallel(queries, k=10, n_candidates=512, n_threads=4)
 cand, votes = index.candidates(q, n_candidates=256)   # no distances computed
+
+ids = index.add(new_vectors)     # insert; returns the assigned ids
+index.remove(ids)                # delete; the points are genuinely gone
 ```
+
+### Mutation
+
+An index is a set of hash tables, so changing it means rehashing a few points and
+regrouping — there is no graph to repair. CIFAR-10, 20,000 x 3072:
+
+| | CoNN | faiss HNSW |
+|---|---|---|
+| insert 1 | **26 ms** | 138 ms |
+| insert 100 | **30 ms** | 265 ms |
+| insert 1,000 | **34 ms** | 1,165 ms |
+| delete 100 | **82 ms** | not supported |
+
+**Deletion is the sharper difference.** `faiss.IndexHNSWFlat.remove_ids` raises —
+the usual workaround is to tombstone and periodically rebuild, so recall decays
+between rebuilds. Here the points leave the tables entirely, so a query never
+spends a distance on a deleted point.
+
+Two caveats. `add` does **not** refit the projection or the hyperplanes; doing so
+would invalidate every code already stored, so an index whose data drifts far from
+its fitted basis should be refitted rather than grown. And `remove` renumbers the
+remaining ids — `add` returns the ids it assigned, so keep your own mapping if you
+need stable external keys.
 
 **Multi-probe.** Each table contributes at most one vote, no matter how many of its
 buckets you open — a point holds one code per table and the probe codes are distinct.

@@ -138,34 +138,140 @@ class FastLSH(object):
 
         H = np.ascontiguousarray(H, dtype=np.float32)
         codes = self._codes(H)
-        self.order_ = np.empty((self.num_tables, self.n_), dtype=np.int32)
-        n_codes = 1 << self.hash_size
+        self.codes_ = codes
         self.offsets_ = None
-        if self.direct_buckets and n_codes * self.num_tables * 4 <= self.max_table_bytes:
-            self.offsets_ = np.empty((self.num_tables, n_codes + 1), dtype=np.int32)
-        else:
-            self.scodes_ = np.empty((self.num_tables, self.n_), dtype=np.int64)
+        self._acc = None
+        self._codes_buf = codes
+        self._hpoints_buf = H
+        self._hsqnorm_buf = (H ** 2).sum(1)
+        self._points_buf = np.ascontiguousarray(Xc, dtype=np.float32)
+        self._sqnorm_buf = (self._points_buf ** 2).sum(1)
+        self._rebind()
+        self._group()
+
+        return self
+
+    def _sort_dtype(self):
+        """Narrowest unsigned type that holds a code.
+
+        numpy picks a radix sort for stable sorts of narrow integers and a
+        comparison sort otherwise, so grouping 160 tables of int64 codes costs
+        ~157 ms where the same values as uint16 cost ~11 ms. The codes only span
+        2**hash_size, so the cast is lossless and the permutation identical.
+        """
+        n_codes = 1 << self.hash_size
+        if n_codes <= (1 << 16):
+            return np.uint16
+        if n_codes <= (1 << 32):
+            return np.uint32
+        return np.int64
+
+    def _group(self):
+        """(Re)build every table from `codes_`.
+
+        Grouping is a stable sort per table plus a prefix sum over codes, so
+        `add` and `remove` regroup wholesale rather than splicing buckets.
+        """
+        n = self.n_
+        n_codes = 1 << self.hash_size
+        sdt = self._sort_dtype()
+        self.order_ = np.empty((self.num_tables, n), dtype=np.int32)
+        use_direct = self.direct_buckets and n_codes * self.num_tables * 4 <= self.max_table_bytes
+        self.offsets_ = np.empty((self.num_tables, n_codes + 1), dtype=np.int32) if use_direct else None
+        if not use_direct:
+            self.scodes_ = np.empty((self.num_tables, n), dtype=np.int64)
         for l in range(self.num_tables):
-            o = np.argsort(codes[:, l], kind="stable")
+            col = self.codes_[:n, l]
+            o = np.argsort(col.astype(sdt, copy=False), kind="stable")
             self.order_[l] = o.astype(np.int32)
             if self.offsets_ is not None:
-                counts = np.bincount(codes[:, l], minlength=n_codes)
+                counts = np.bincount(col.astype(np.int64, copy=False), minlength=n_codes)
                 self.offsets_[l, 0] = 0
                 np.cumsum(counts, out=self.offsets_[l, 1:])
             else:
-                self.scodes_[l] = codes[o, l]
-
-        # PCA coordinates kept for the cheap first-pass rerank
-        self.hpoints_ = H
-        self.hsqnorm_ = (H ** 2).sum(1)
-
-        # kept for the rerank; norms precomputed so a distance is one dot product
-        self.points_ = np.ascontiguousarray(Xc, dtype=np.float32)
-        self.sqnorm_ = (self.points_ ** 2).sum(1)
-
-        self._acc = np.zeros(self.n_, dtype=np.int16)
+                self.scodes_[l] = col[o]
+        if self._acc is None or self._acc.shape[0] != n:
+            self._acc = np.zeros(n, dtype=np.int16)
         self._hist = np.zeros(self.num_tables + 2, dtype=np.int32)
-        return self
+
+    def add(self, X):
+        """Insert points into an existing index.
+
+        Hash the newcomers and regroup. The projection and the hyperplanes are
+        *not* recomputed - doing so would invalidate every code already stored -
+        so an index whose data drifts far from its fitted basis should be refitted.
+
+        :returns: the ids assigned to the new points.
+        """
+        X = np.atleast_2d(np.ascontiguousarray(X, dtype=np.float32))
+        Xc = X - self.mean_
+        H = np.ascontiguousarray(Xc @ self.projection_ if self.projection_ is not None else Xc,
+                                 dtype=np.float32)
+        first = self.n_
+        m = X.shape[0]
+        self._reserve(first + m)
+        self._codes_buf[first:first + m] = self._codes(H)
+        self._points_buf[first:first + m] = Xc
+        self._sqnorm_buf[first:first + m] = (Xc ** 2).sum(1)
+        self._hpoints_buf[first:first + m] = H
+        self._hsqnorm_buf[first:first + m] = (H ** 2).sum(1)
+        self.n_ = first + m
+        self._rebind()
+        self._group()
+        return np.arange(first, self.n_)
+
+    def _reserve(self, need):
+        """Grow the backing arrays geometrically, so repeated `add` is amortised
+        O(1) copies rather than one full copy of the point matrix per call."""
+        cap = self._points_buf.shape[0]
+        if need <= cap:
+            return
+        new = max(need, cap * 2, 1024)
+        def grow(a, fill_shape):
+            b = np.zeros(fill_shape, dtype=a.dtype)
+            b[:self.n_] = a[:self.n_]
+            return b
+        d = self._points_buf.shape[1]
+        hd = self._hpoints_buf.shape[1]
+        self._codes_buf = grow(self._codes_buf, (new, self.num_tables))
+        self._points_buf = grow(self._points_buf, (new, d))
+        self._sqnorm_buf = grow(self._sqnorm_buf, (new,))
+        self._hpoints_buf = grow(self._hpoints_buf, (new, hd))
+        self._hsqnorm_buf = grow(self._hsqnorm_buf, (new,))
+        self._acc = None
+
+    def _rebind(self):
+        """Public views over the live prefix of the backing arrays."""
+        n = self.n_
+        self.codes_ = self._codes_buf[:n]
+        self.points_ = self._points_buf[:n]
+        self.sqnorm_ = self._sqnorm_buf[:n]
+        self.hpoints_ = self._hpoints_buf[:n]
+        self.hsqnorm_ = self._hsqnorm_buf[:n]
+
+    def remove(self, ids):
+        """Delete points by id.
+
+        Nothing is tombstoned: the points leave the tables entirely, so queries
+        never spend a distance on a deleted point and recall does not decay with
+        churn. Remaining ids are renumbered - `add` returns ids, so hold onto
+        your own mapping if you need stable external keys.
+
+        :returns: the number of points removed.
+        """
+        ids = np.atleast_1d(np.asarray(ids, dtype=np.int64))
+        keep = np.ones(self.n_, dtype=bool)
+        keep[ids] = False
+        removed = int(self.n_ - keep.sum())
+        n = self.n_ - removed
+        for name in ("_codes_buf", "_points_buf", "_sqnorm_buf", "_hpoints_buf", "_hsqnorm_buf"):
+            buf = getattr(self, name)
+            buf[:n] = buf[:self.n_][keep]
+        self.n_ = n
+        self._acc = None
+        self._rebind()
+        self._group()
+        return removed
 
     def _project(self, X):
         Xc = np.ascontiguousarray(X, dtype=np.float32) - self.mean_

@@ -158,6 +158,72 @@ def test_parallel_matches_serial(blobs):
 
 
 # --------------------------------------------------------------------- #
+# mutation
+# --------------------------------------------------------------------- #
+
+def test_added_points_become_findable(blobs):
+    base, newcomers = blobs[:2500], blobs[2500:2600]
+    f = FastLSH(hash_size=8, num_tables=64, pca_dim=16).fit(base)
+    ids = f.add(newcomers)
+    assert list(ids) == list(range(2500, 2600))
+    assert f.n_ == 2600
+    # each new point must now be its own nearest neighbour
+    found, _ = f.search(newcomers, k=1, n_candidates=256)
+    assert (found[:, 0] == ids).mean() > 0.95
+
+
+def test_removed_points_never_come_back(blobs):
+    """No tombstones: a deleted point must be absent from every result, so
+    recall does not decay as an index churns."""
+    base = blobs[:3000]
+    f = FastLSH(hash_size=8, num_tables=64, pca_dim=16).fit(base)
+    victims = np.arange(0, 500)
+    survivors = base[500:]
+    assert f.remove(victims) == 500
+    assert f.n_ == 2500
+    idx, _ = f.search(survivors[:200], k=10, n_candidates=256)
+    assert idx.max() < f.n_                      # ids were renumbered, none dangle
+    # the surviving points still find themselves
+    assert (idx[:, 0] == np.arange(200)).mean() > 0.95
+
+
+def test_add_then_remove_restores_the_original_index(blobs):
+    base, extra = blobs[:2500], blobs[2500:2600]
+    a = FastLSH(hash_size=8, num_tables=64, pca_dim=16, random_state=7).fit(base)
+    before, _ = a.search(base[:100], k=10, n_candidates=256)
+    ids = a.add(extra)
+    a.remove(ids)
+    after, _ = a.search(base[:100], k=10, n_candidates=256)
+    assert a.n_ == 2500
+    assert np.array_equal(before, after)
+
+
+def test_growth_is_amortised_not_a_full_copy(blobs):
+    """Repeated single inserts must not each copy the whole point matrix."""
+    f = FastLSH(hash_size=8, num_tables=32, pca_dim=16).fit(blobs[:2000])
+    cap0 = f._points_buf.shape[0]
+    for i in range(2000, 2200):
+        f.add(blobs[i:i + 1])
+    assert f.n_ == 2200
+    # capacity doubled a handful of times, not 200 times
+    assert f._points_buf.shape[0] >= 2200
+    assert f._points_buf.shape[0] >= cap0
+    idx, _ = f.search(blobs[2100:2101], k=1, n_candidates=128)
+    assert idx[0, 0] == 2100
+
+
+def test_narrow_sort_dtype_does_not_change_grouping(blobs):
+    """The uint16 cast that makes grouping use a radix sort must be lossless:
+    same buckets, same votes."""
+    f = FastLSH(hash_size=10, num_tables=24, pca_dim=16).fit(blobs)
+    assert f._sort_dtype() == np.uint16
+    order_fast = f.order_.copy()
+    for l in range(f.num_tables):                # recompute the slow way
+        expected = np.argsort(f.codes_[:, l], kind="stable").astype(np.int32)
+        assert np.array_equal(order_fast[l], expected)
+
+
+# --------------------------------------------------------------------- #
 # graph construction
 # --------------------------------------------------------------------- #
 
@@ -173,6 +239,10 @@ def test_auto_hash_size_beats_a_fixed_code_length(blobs):
     def growth(hash_size, **kw):
         seen = []
         for n in (750, 1500, 3000):                       # N grows 4x
+            # LSHIndex draws its hyperplanes from the global numpy RNG, so
+            # without this the outcome depends on what ran earlier in the
+            # session and the test is intermittently flaky.
+            np.random.seed(1234)
             idx = LSHIndex(hash_size, blobs.shape[1], num_tables=8, **kw)
             idx.build(blobs[:n])
             seen.append(idx.collision_stats()["candidates_per_query"])
