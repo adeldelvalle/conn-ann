@@ -12,6 +12,7 @@ jobs:
   wheels:
     name: wheels · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60          # never let a hung cross-compile sit for hours
     strategy:
       fail-fast: false
       matrix:
@@ -33,13 +34,16 @@ jobs:
         with:
           python-version: "3.12"
       - run: pipx run build --sdist
-      # the sdist must build on a machine without Cython, using the shipped _vote.c
+      # The sdist must build and import on its own. Tests run from a directory
+      # that does NOT contain the source tree: pytest prepends the tests' parent
+      # to sys.path, so running from the repo root imports conn_ann/ from source,
+      # which has no compiled extension, and every import fails.
       - name: Verify the sdist installs standalone
         run: |
           python -m venv /tmp/check
-          /tmp/check/bin/pip install dist/*.tar.gz
-          /tmp/check/bin/pip install pytest
-          /tmp/check/bin/python -m pytest tests/ -q
+          /tmp/check/bin/pip install dist/*.tar.gz pytest
+          mkdir -p /tmp/verify && cp -r tests /tmp/verify/
+          cd /tmp/verify && /tmp/check/bin/python -m pytest tests -q
       - uses: actions/upload-artifact@v4
         with:
           name: sdist
