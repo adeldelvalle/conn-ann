@@ -12,11 +12,14 @@ jobs:
   wheels:
     name: wheels · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60          # never let a hung cross-compile sit for hours
+    timeout-minutes: 60          # a queued or hung job dies in an hour, not 24
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-13, macos-14, windows-latest]
+        # macos-13 (Intel) has been retired by GitHub - jobs targeting it queue
+        # until the 24h limit and never start. macos-14 is Apple silicon and
+        # builds a universal2 wheel that also runs on Intel Macs.
+        os: [ubuntu-latest, macos-14, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - name: Build wheels

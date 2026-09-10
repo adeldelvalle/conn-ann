@@ -61,7 +61,12 @@ build-verbosity = 1
 manylinux-x86_64-image = "manylinux_2_28"
 manylinux-aarch64-image = "manylinux_2_28"
 
-# macos-13 is Intel and macos-14 is Apple silicon, so each runner builds its
-# native arch by default. Do NOT set archs = ["x86_64", "arm64"] here: that makes
-# every runner cross-compile the other arch and then fail or hang trying to test
-# a wheel it cannot execute.
+[tool.cibuildwheel.macos]
+# One universal2 wheel covers Intel and Apple silicon, which matters now that
+# GitHub has retired its Intel (macos-13) runners. Do NOT use
+# archs = ["x86_64", "arm64"]: that builds two separate wheels and makes the
+# arm64 runner test the x86_64 one through Rosetta, which is how cp311 failed
+# with `arch -x86_64 ... failed with code 1`.
+archs = ["universal2"]
+# Testing the Intel half would mean Rosetta again; the arm64 half is tested.
+test-skip = "*universal2:x86_64"
